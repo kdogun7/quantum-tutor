@@ -1,0 +1,1583 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>퀀텀 튜터: 물리 시뮬레이션 웹</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter (UI 폰트) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- React 및 ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel CDN (JSX를 브라우저에서 변환하기 위함) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* 기본 폰트 설정 */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* 캔버스 기본 스타일 */
+        canvas {
+            background-color: #e0f2f7; /* 하늘색 배경 */
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            display: block;
+            width: 100%; /* 반응형 너비 */
+            max-width: 800px; /* 최대 너비 제한 */
+            height: auto; /* 높이 자동 조절 */
+            aspect-ratio: 800 / 400; /* 비율 유지 */
+        }
+        /* 포물선 운동 시뮬레이션 캔버스에만 적용되는 최대 너비 및 비율 */
+        .projectile-canvas {
+            max-width: 1000px;
+            aspect-ratio: 1000 / 600;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4">
+    <div id="root" class="w-full flex flex-col items-center justify-center">
+        <!-- React 앱이 여기에 렌더링됩니다 -->
+    </div>
+
+    <script type="text/babel">
+        // ProjectileMotionSimulation 컴포넌트
+        const ProjectileMotionSimulation = ({ onBackToMenu }) => {
+            const canvasRef = React.useRef(null);
+            const animationFrameId = React.useRef(null);
+
+            const [initialVelocity, setInitialVelocity] = React.useState(50); // 초기 속도 (m/s)
+            const [launchAngle, setLaunchAngle] = React.useState(45); // 발사 각도 (도)
+            const [isSimulating, setIsSimulating] = React.useState(false); // 시뮬레이션 진행 여부
+            const [time, setTime] = React.useState(0); // 시뮬레이션 시간 (초)
+            const [message, setMessage] = React.useState(''); // 사용자에게 보여줄 메시지
+
+            // 실시간 표시를 위한 상태 추가
+            const [currentSpeed, setCurrentSpeed] = React.useState(0); // 순간 속도
+            const [currentXPosition, setCurrentXPosition] = React.useState(0); // 현재 수평 거리
+            const [currentYPosition, setCurrentYPosition] = React.useState(0); // 현재 높이
+
+            const GRAVITY = 9.81; // 중력 가속도 (m/s^2)
+            const CANVAS_SCALE = 3; // 실제 미터 단위를 캔버스 픽셀로 변환하는 스케일 (1m = 3px) - 더 넓은 범위 표시를 위해 조정
+
+            // 캔버스 크기 조정
+            const CANVAS_WIDTH = 1000;
+            const CANVAS_HEIGHT = 600;
+
+            // 시뮬레이션 초기화 함수
+            const resetSimulation = React.useCallback(() => {
+                if (animationFrameId.current) {
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+                setIsSimulating(false);
+                setTime(0);
+                setMessage('');
+                setCurrentSpeed(0);
+                setCurrentXPosition(0);
+                setCurrentYPosition(0);
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT); // 캔버스 초기화
+                    drawGround(ctx); // 지면 다시 그리기
+                }
+            }, []);
+
+            // 시뮬레이션 시작 함수
+            const startSimulation = React.useCallback(() => {
+                // 유효성 검사
+                if (initialVelocity <= 0) {
+                    setMessage('초기 속도는 0보다 커야 합니다.');
+                    return;
+                }
+                if (launchAngle < 0 || launchAngle > 90) {
+                    setMessage('발사 각도는 0도에서 90도 사이여야 합니다.');
+                    return;
+                }
+
+                resetSimulation(); // 시뮬레이션 시작 전 초기화
+                setIsSimulating(true);
+                setMessage('시뮬레이션 시작!');
+            }, [initialVelocity, launchAngle, resetSimulation]);
+
+            // 지면을 그리는 함수
+            const drawGround = React.useCallback((ctx) => {
+                ctx.fillStyle = '#4CAF50'; // 녹색
+                ctx.fillRect(0, CANVAS_HEIGHT - 20, CANVAS_WIDTH, 20); // 지면 그리기
+                ctx.strokeStyle = '#388E3C'; // 진한 녹색
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, CANVAS_HEIGHT - 20);
+                ctx.lineTo(CANVAS_WIDTH, CANVAS_HEIGHT - 20);
+                ctx.stroke();
+            }, []);
+
+            // 캔버스에 그리는 함수 (포물선 운동 궤적 및 물체)
+            const draw = React.useCallback((ctx) => {
+                // 라디안으로 각도 변환
+                const angleRad = (launchAngle * Math.PI) / 180;
+
+                // 물체의 현재 위치 계산
+                // x(t) = v0 * cos(theta) * t
+                const x = initialVelocity * Math.cos(angleRad) * time;
+                // y(t) = v0 * sin(theta) * t - 0.5 * g * t^2
+                const y = initialVelocity * Math.sin(angleRad) * time - 0.5 * GRAVITY * time * time;
+
+                // 물체의 현재 속도 계산
+                const vx = initialVelocity * Math.cos(angleRad);
+                const vy = initialVelocity * Math.sin(angleRad) - GRAVITY * time;
+                const speed = Math.sqrt(vx * vx + vy * vy);
+
+                // 캔버스 좌표계로 변환 (y축은 아래로 갈수록 증가하므로 뒤집어줌)
+                // 캔버스 원점은 좌측 상단이므로, 지면을 기준으로 계산
+                const canvasX = x * CANVAS_SCALE;
+                const canvasY = CANVAS_HEIGHT - 20 - (y * CANVAS_SCALE); // 지면 위 20px 기준으로 계산
+
+                // 실시간 정보 업데이트
+                setCurrentSpeed(speed);
+                setCurrentXPosition(x);
+                setCurrentYPosition(y);
+
+                // 캔버스 초기화 (이전 프레임 지우기)
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT - 20); // 지면 부분은 남겨둠
+                drawGround(ctx); // 지면 다시 그리기
+
+                // 궤적 그리기
+                ctx.strokeStyle = '#FF5722'; // 주황색
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                for (let t_path = 0; t_path <= time; t_path += 0.1) { // 0.1초 간격으로 궤적 그리기
+                    const pathX = initialVelocity * Math.cos(angleRad) * t_path;
+                    const pathY = initialVelocity * Math.sin(angleRad) * t_path - 0.5 * GRAVITY * t_path * t_path;
+                    const canvasPathX = pathX * CANVAS_SCALE;
+                    const canvasPathY = CANVAS_HEIGHT - 20 - (pathY * CANVAS_SCALE);
+
+                    // 캔버스 범위를 벗어나지 않도록 클리핑
+                    if (canvasPathX >= 0 && canvasPathX <= CANVAS_WIDTH && canvasPathY >= 0 && canvasPathY <= CANVAS_HEIGHT - 20) {
+                        if (t_path === 0) {
+                            ctx.moveTo(canvasPathX, canvasPathY);
+                        } else {
+                            ctx.lineTo(canvasPathX, canvasPathY);
+                        }
+                    }
+                }
+                ctx.stroke();
+
+                // 물체 그리기 (빨간색 원)
+                ctx.fillStyle = '#F44336'; // 빨간색
+                ctx.beginPath();
+                ctx.arc(canvasX, canvasY, 5, 0, Math.PI * 2); // 반지름 5px의 원
+                ctx.fill();
+
+                // 물체가 지면에 닿았는지 확인
+                if (y <= 0 && time > 0) {
+                    setIsSimulating(false);
+                    setMessage(`도달 거리: ${x.toFixed(2)}m, 최고 높이: ${((initialVelocity * Math.sin(angleRad))**2 / (2 * GRAVITY)).toFixed(2)}m`);
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+                // 캔버스 범위를 벗어났는지 확인 (좌우)
+                // 물체가 캔버스 우측 경계를 넘어가거나, 음의 높이로 너무 많이 내려갔을 때 종료
+                if (canvasX > CANVAS_WIDTH + 50 || canvasY > CANVAS_HEIGHT + 50) { // 여유 공간 50px
+                    setIsSimulating(false);
+                    setMessage('물체가 캔버스 범위를 벗어났습니다. 초기화 후 다시 시도하세요.');
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+            }, [initialVelocity, launchAngle, time, drawGround, CANVAS_SCALE, CANVAS_WIDTH, CANVAS_HEIGHT]);
+
+            // 애니메이션 루프
+            const animate = React.useCallback(() => {
+                if (!isSimulating) return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                draw(ctx); // 현재 시간 기준으로 그리기
+                setTime(prevTime => prevTime + 0.05); // 시간 0.05초 증가 (프레임 간격)
+
+                animationFrameId.current = requestAnimationFrame(animate); // 다음 프레임 요청
+            }, [isSimulating, draw]);
+
+            // 시뮬레이션 상태가 변경될 때마다 애니메이션 시작/중지
+            React.useEffect(() => {
+                if (isSimulating) {
+                    animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                }
+                // 컴포넌트 언마운트 시 애니메이션 정리
+                return () => {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                };
+            }, [isSimulating, animate]);
+
+            // 컴포넌트 마운트 시 캔버스 초기화 및 지면 그리기
+            React.useEffect(() => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT); // 캔버스 초기화
+                    drawGround(ctx);
+                }
+            }, [drawGround]);
+
+
+            return (
+                <>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-6 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 포물선 운동 시뮬레이션
+                    </h1>
+
+                    <div className="bg-white p-8 rounded-xl shadow-lg mb-8 w-full max-w-md">
+                        <div className="mb-6">
+                            <label htmlFor="velocity" className="block text-gray-700 text-sm font-semibold mb-2">
+                                초기 속도 (m/s):
+                            </label>
+                            <input
+                                type="number"
+                                id="velocity"
+                                value={initialVelocity}
+                                onChange={(e) => setInitialVelocity(Number(e.target.value))}
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                min="1"
+                            />
+                        </div>
+
+                        <div className="mb-6">
+                            <label htmlFor="angle" className="block text-gray-700 text-sm font-semibold mb-2">
+                                발사 각도 (도):
+                            </label>
+                            <input
+                                type="number"
+                                id="angle"
+                                value={launchAngle}
+                                onChange={(e) => setLaunchAngle(Number(e.target.value))}
+                                className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                min="0"
+                                max="90"
+                            />
+                        </div>
+
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={startSimulation}
+                                disabled={isSimulating}
+                                className={`px-6 py-3 rounded-lg font-semibold shadow-md transition-all duration-300
+                                    ${isSimulating ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white transform hover:scale-105'}`}
+                            >
+                                시뮬레이션 시작
+                            </button>
+                            <button
+                                onClick={resetSimulation}
+                                className="px-6 py-3 bg-red-500 text-white rounded-lg font-semibold shadow-md hover:bg-red-600 transition-all duration-300 transform hover:scale-105"
+                            >
+                                초기화
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="relative w-full max-w-2xl bg-white rounded-xl shadow-lg overflow-hidden">
+                        <canvas
+                            ref={canvasRef}
+                            width={CANVAS_WIDTH}
+                            height={CANVAS_HEIGHT}
+                            className="block projectile-canvas"
+                        ></canvas>
+                        {message && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                                {message}
+                            </div>
+                        )}
+                        {isSimulating && (
+                            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg flex space-x-4">
+                                <span>속도: {currentSpeed.toFixed(2)} m/s</span>
+                                <span>수평 거리: {currentXPosition.toFixed(2)} m</span>
+                                <span>높이: {currentYPosition.toFixed(2)} m</span>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl shadow-lg mt-8 w-full max-w-md text-gray-700">
+                        <h2 className="text-2xl font-bold mb-4">학습 가이드</h2>
+                        <p className="mb-2">이 시뮬레이션은 포물선 운동의 기본 원리를 보여줍니다.</p>
+                        <ul className="list-disc list-inside space-y-1">
+                            <li>초기 속도와 발사 각도를 조절하여 물체의 궤적이 어떻게 변하는지 관찰해보세요.</li>
+                            <li>발사 각도 45도일 때 도달 거리가 최대가 되는지 확인해보세요.</li>
+                            <li>초기 속도가 증가하면 궤적의 크기가 어떻게 변하는지 살펴보세요.</li>
+                            <li>이 시뮬레이션은 공기 저항을 무시한 이상적인 상황을 가정합니다.</li>
+                            <li>물체의 수평 운동은 등속 운동, 수직 운동은 등가속도 운동(중력 가속도)을 합니다.</li>
+                        </ul>
+                        <p className="mt-4 text-sm text-gray-500">
+                            미적분학적 관점: 속도는 위치의 미분, 가속도는 속도의 미분입니다. 포물선 운동은 중력 가속도를 두 번 적분하여 위치 함수를 얻습니다. (위치 함수: x(t) = v0 * cos(세타) * t, y(t) = v0 * sin(세타) * t - 0.5 * g * t^2)
+                        </p>
+                        <button
+                            onClick={onBackToMenu}
+                            className="mt-6 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold shadow-md hover:bg-gray-300 transition-all duration-300 transform hover:scale-105 w-full"
+                        >
+                            메인 메뉴로 돌아가기
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+        // SimpleHarmonicMotionSimulation 컴포넌트
+        const SimpleHarmonicMotionSimulation = ({ onBackToMenu }) => {
+            const canvasRef = React.useRef(null);
+            const animationFrameId = React.useRef(null);
+
+            const [amplitude, setAmplitude] = React.useState(100); // 진폭 (px)
+            const [frequency, setFrequency] = React.useState(0.5); // 주파수 (Hz)
+            const [isSimulating, setIsSimulating] = React.useState(false);
+            const [time, setTime] = React.useState(0);
+            const [message, setMessage] = React.useState('');
+
+            // 실시간 표시를 위한 상태 추가
+            const [maxSpeed, setMaxSpeed] = React.useState(0); // 최대 속도
+            const [maxAcceleration, setMaxAcceleration] = React.useState(0); // 최대 가속도
+
+            const CANVAS_WIDTH = 800;
+            const CANVAS_HEIGHT = 400;
+            const SPRING_LENGTH = 100; // 용수철 기본 길이
+            const SPRING_STIFFNESS = 0.1; // 용수철 강성 (시각적 조절용)
+
+            // 최대 속도 및 가속도 계산 함수
+            const calculateDerivedQuantities = React.useCallback((amp, freq) => {
+                const omega = 2 * Math.PI * freq; // 각진동수
+                setMaxSpeed(amp * omega);
+                setMaxAcceleration(amp * omega * omega);
+            }, []);
+
+            // 시뮬레이션 초기화 함수
+            const resetSimulation = React.useCallback(() => {
+                if (animationFrameId.current) {
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+                setIsSimulating(false);
+                setTime(0);
+                setMessage('');
+                calculateDerivedQuantities(amplitude, frequency); // 초기화 시에도 계산
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, [amplitude, frequency, calculateDerivedQuantities]);
+
+            // 시뮬레이션 시작 함수
+            const startSimulation = React.useCallback(() => {
+                if (amplitude <= 0) {
+                    setMessage('진폭은 0보다 커야 합니다.');
+                    return;
+                }
+                if (frequency <= 0) {
+                    setMessage('주파수는 0보다 커야 합니다.');
+                    return;
+                }
+                resetSimulation();
+                setIsSimulating(true);
+                setMessage('시뮬레이션 시작!');
+            }, [amplitude, frequency, resetSimulation]);
+
+            const drawInitialState = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 천장 그리기
+                ctx.fillStyle = '#795548'; // 갈색
+                ctx.fillRect(CANVAS_WIDTH / 2 - 50, 0, 100, 20);
+
+                // 용수철 그리기 (초기 상태)
+                ctx.strokeStyle = '#607D8B'; // 회색
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(CANVAS_WIDTH / 2, 20);
+                ctx.lineTo(CANVAS_WIDTH / 2, 20 + SPRING_LENGTH);
+                ctx.stroke();
+
+                // 추 그리기 (초기 상태)
+                ctx.fillStyle = '#9C27B0'; // 보라색
+                ctx.beginPath();
+                ctx.arc(CANVAS_WIDTH / 2, 20 + SPRING_LENGTH + 20, 20, 0, Math.PI * 2);
+                ctx.fill();
+            }, []);
+
+            const draw = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 천장 그리기
+                ctx.fillStyle = '#795548';
+                ctx.fillRect(CANVAS_WIDTH / 2 - 50, 0, 100, 20);
+
+                // 물체의 현재 위치 계산 (단진동)
+                // y(t) = A * cos(2 * pi * f * t)
+                const yOffset = amplitude * Math.cos(2 * Math.PI * frequency * time);
+                const massY = 20 + SPRING_LENGTH + yOffset; // 천장, 용수철 기본 길이, 그리고 진폭에 따른 오프셋
+
+                // 용수철 그리기
+                ctx.strokeStyle = '#607D8B';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(CANVAS_WIDTH / 2, 20);
+                const numCoils = 15;
+                const currentSpringLength = massY - 20; // 용수철이 늘어난 실제 길이
+                const coilSpacing = currentSpringLength / numCoils;
+                for (let i = 0; i < numCoils; i++) {
+                    ctx.lineTo(CANVAS_WIDTH / 2 + (i % 2 === 0 ? 10 : -10), 20 + i * coilSpacing);
+                }
+                ctx.lineTo(CANVAS_WIDTH / 2, massY);
+                ctx.stroke();
+
+
+                // 추 그리기
+                ctx.fillStyle = '#9C27B0';
+                ctx.beginPath();
+                ctx.arc(CANVAS_WIDTH / 2, massY + 20, 20, 0, Math.PI * 2);
+                ctx.fill();
+
+                // 시뮬레이션 종료 조건 (예: 일정 시간 후)
+                if (time > 100) { // 100초 후 자동 종료
+                    setIsSimulating(false);
+                    setMessage('시뮬레이션 완료!');
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+            }, [amplitude, frequency, time]);
+
+            const animate = React.useCallback(() => {
+                if (!isSimulating) return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                draw(ctx);
+                setTime(prevTime => prevTime + 0.05); // 시간 0.05초 증가
+
+                animationFrameId.current = requestAnimationFrame(animate);
+            }, [isSimulating, draw]);
+
+            React.useEffect(() => {
+                if (isSimulating) {
+                    animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                }
+                return () => {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                };
+            }, [isSimulating, animate]);
+
+            // 진폭 또는 주파수가 변경될 때마다 파생 물리량 업데이트
+            React.useEffect(() => {
+                calculateDerivedQuantities(amplitude, frequency);
+            }, [amplitude, frequency, calculateDerivedQuantities]);
+
+            // 컴포넌트 마운트 시 캔버스 초기화 및 지면 그리기
+            React.useEffect(() => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT); // 캔버스 초기화
+                    drawInitialState(ctx);
+                }
+            }, [drawInitialState]);
+
+            return (
+                <>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-6 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 단진동 운동 시뮬레이션
+                    </h1>
+
+                    <div className="bg-white p-8 rounded-xl shadow-lg mb-8 w-full max-w-md">
+                        <div className="mb-6">
+                            <label htmlFor="amplitude" className="block text-gray-700 text-sm font-semibold mb-2">
+                                진폭 (px):
+                            </label>
+                            <input
+                                type="range"
+                                id="amplitude"
+                                min="10"
+                                max="150"
+                                value={amplitude}
+                                onChange={(e) => setAmplitude(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{amplitude}px</span>
+                        </div>
+
+                        <div className="mb-6">
+                            <label htmlFor="frequency" className="block text-gray-700 text-sm font-semibold mb-2">
+                                주파수 (Hz):
+                            </label>
+                            <input
+                                type="range"
+                                id="frequency"
+                                min="0.1"
+                                max="2"
+                                step="0.1"
+                                value={frequency}
+                                onChange={(e) => setFrequency(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{frequency}Hz</span>
+                        </div>
+
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={startSimulation}
+                                disabled={isSimulating}
+                                className={`px-6 py-3 rounded-lg font-semibold shadow-md transition-all duration-300
+                                    ${isSimulating ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white transform hover:scale-105'}`}
+                            >
+                                시뮬레이션 시작
+                            </button>
+                            <button
+                                onClick={resetSimulation}
+                                className="px-6 py-3 bg-red-500 text-white rounded-lg font-semibold shadow-md hover:bg-red-600 transition-all duration-300 transform hover:scale-105"
+                            >
+                                초기화
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="relative w-full max-w-2xl bg-white rounded-xl shadow-lg overflow-hidden">
+                        <canvas
+                            ref={canvasRef}
+                            width={CANVAS_WIDTH}
+                            height={CANVAS_HEIGHT}
+                            className="block"
+                        ></canvas>
+                        {message && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                                {message}
+                            </div>
+                        )}
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg flex space-x-4">
+                            <span>최대 속도: {maxSpeed.toFixed(2)} px/s</span>
+                            <span>최대 가속도: {maxAcceleration.toFixed(2)} px/s²</span>
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl shadow-lg mt-8 w-full max-w-md text-gray-700">
+                        <h2 className="text-2xl font-bold mb-4">학습 가이드</h2>
+                        <p className="mb-2">이 시뮬레이션은 단진동 운동의 기본 원리를 보여줍니다.</p>
+                        <ul className="list-disc list-inside space-y-1">
+                            <li>진폭은 물체가 평형점에서 최대로 벗어나는 거리입니다.</li>
+                            <li>주파수는 1초 동안 진동하는 횟수입니다.</li>
+                            <li>단진동 운동은 사인파 또는 코사인파 형태로 나타납니다.</li>
+                            <li>용수철에 매달린 추의 운동이나 단진자의 작은 진동이 단진동 운동의 예시입니다.</li>
+                        </ul>
+                        <p className="mt-4 text-sm text-gray-500">
+                            미적분학적 관점: 단진동 운동의 위치 함수를 미분하면 속도 함수를, 속도 함수를 미분하면 가속도 함수를 얻을 수 있습니다.
+                        </p>
+                        <button
+                            onClick={onBackToMenu}
+                            className="mt-6 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold shadow-md hover:bg-gray-300 transition-all duration-300 transform hover:scale-105 w-full"
+                        >
+                            메인 메뉴로 돌아가기
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+        // CircularMotionSimulation 컴포넌트
+        const CircularMotionSimulation = ({ onBackToMenu }) => {
+            const canvasRef = React.useRef(null);
+            const animationFrameId = React.useRef(null);
+
+            const [radius, setRadius] = React.useState(100); // 원의 반지름 (px)
+            const [angularVelocity, setAngularVelocity] = React.useState(1); // 각속도 (rad/s)
+            const [isSimulating, setIsSimulating] = React.useState(false);
+            const [time, setTime] = React.useState(0);
+            const [message, setMessage] = React.useState('');
+            const [tangentialVelocity, setTangentialVelocity] = React.useState(0); // 접선 속도 상태 추가
+
+            const CANVAS_WIDTH = 800;
+            const CANVAS_HEIGHT = 400;
+            const CENTER_X = CANVAS_WIDTH / 2;
+            const CENTER_Y = CANVAS_HEIGHT / 2;
+
+            const resetSimulation = React.useCallback(() => {
+                if (animationFrameId.current) {
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+                setIsSimulating(false);
+                setTime(0);
+                setMessage('');
+                setTangentialVelocity(0); // 속도 초기화
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, []);
+
+            const startSimulation = React.useCallback(() => {
+                if (radius <= 0) {
+                    setMessage('반지름은 0보다 커야 합니다.');
+                    return;
+                }
+                if (angularVelocity === 0) {
+                    setMessage('각속도는 0이 될 수 없습니다.');
+                    return;
+                }
+                resetSimulation();
+                setIsSimulating(true);
+                setMessage('시뮬레이션 시작!');
+            }, [radius, angularVelocity, resetSimulation]);
+
+            const drawInitialState = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 원의 궤적 그리기
+                ctx.strokeStyle = '#673AB7'; // 보라색
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(CENTER_X, CENTER_Y, radius, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // 초기 물체 위치
+                ctx.fillStyle = '#FFC107'; // 노란색
+                ctx.beginPath();
+                ctx.arc(CENTER_X + radius, CENTER_Y, 10, 0, Math.PI * 2);
+                ctx.fill();
+            }, [radius]);
+
+            const draw = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 원의 궤적 그리기
+                ctx.strokeStyle = '#673AB7'; // 보라색
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(CENTER_X, CENTER_Y, radius, 0, Math.PI * 2);
+                ctx.stroke();
+
+                // 물체의 현재 위치 계산 (원운동)
+                // x(t) = R * cos(omega * t)
+                // y(t) = R * sin(omega * t)
+                const currentAngle = angularVelocity * time; // 현재 각도
+                const objectX = CENTER_X + radius * Math.cos(currentAngle);
+                const objectY = CENTER_Y + radius * Math.sin(currentAngle);
+
+                // 물체 그리기
+                ctx.fillStyle = '#FFC107'; // 노란색
+                ctx.beginPath();
+                ctx.arc(objectX, objectY, 10, 0, Math.PI * 2); // 반지름 10px의 원
+                ctx.fill();
+
+                // 중심에서 물체까지의 선 그리기
+                ctx.strokeStyle = '#2196F3'; // 파란색
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(CENTER_X, CENTER_Y);
+                ctx.lineTo(objectX, objectY);
+                ctx.stroke();
+
+                // 접선 속도 계산 및 표시
+                const currentTangentialVelocity = radius * angularVelocity;
+                setTangentialVelocity(currentTangentialVelocity); // 상태 업데이트
+
+                // 속도 벡터 그리기 (접선 방향)
+                // 속도 벡터는 위치 벡터를 미분한 것. 원운동에서 속도 벡터는 항상 궤적에 접선 방향
+                // 각도 currentAngle에 90도(PI/2)를 더하거나 빼서 접선 방향을 얻음
+                const velocityVectorLength = currentTangentialVelocity * 5; // 시각화를 위해 스케일 조정 (픽셀 단위)
+                // 접선 방향은 현재 각도에서 90도 (PI/2)를 더한 방향 (시계 반대 방향 회전 기준)
+                const velocityArrowX = objectX + velocityVectorLength * Math.cos(currentAngle + Math.PI / 2);
+                const velocityArrowY = objectY + velocityVectorLength * Math.sin(currentAngle + Math.PI / 2);
+
+                ctx.strokeStyle = '#4CAF50'; // 녹색 (속도 벡터 색상)
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(objectX, objectY);
+                ctx.lineTo(velocityArrowX, velocityArrowY);
+                ctx.stroke();
+
+                // 화살표 머리 그리기
+                const headlen = 10; // 화살표 머리 길이
+                const angle = Math.atan2(velocityArrowY - objectY, velocityArrowX - objectX);
+                ctx.lineTo(velocityArrowX - headlen * Math.cos(angle - Math.PI / 6), velocityArrowY - headlen * Math.sin(angle - Math.PI / 6));
+                ctx.moveTo(velocityArrowX, velocityArrowY);
+                ctx.lineTo(velocityArrowX - headlen * Math.cos(angle + Math.PI / 6), velocityArrowY - headlen * Math.sin(angle + Math.PI / 6));
+                ctx.stroke();
+
+
+                // 시뮬레이션 종료 조건 (예: 일정 시간 후)
+                if (time > 100) { // 100초 후 자동 종료
+                    setIsSimulating(false);
+                    setMessage('시뮬레이션 완료!');
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+            }, [radius, angularVelocity, time]);
+
+            const animate = React.useCallback(() => {
+                if (!isSimulating) return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                draw(ctx);
+                setTime(prevTime => prevTime + 0.05); // 시간 0.05초 증가
+
+                animationFrameId.current = requestAnimationFrame(animate);
+            }, [isSimulating, draw]);
+
+            React.useEffect(() => {
+                if (isSimulating) {
+                    animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                }
+                return () => {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                };
+            }, [isSimulating, animate]);
+
+            React.useEffect(() => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, [drawInitialState]);
+
+            return (
+                <>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-6 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 원운동 시뮬레이션
+                    </h1>
+
+                    <div className="bg-white p-8 rounded-xl shadow-lg mb-8 w-full max-w-md">
+                        <div className="mb-6">
+                            <label htmlFor="radius" className="block text-gray-700 text-sm font-semibold mb-2">
+                                반지름 (px):
+                            </label>
+                            <input
+                                type="range"
+                                id="radius"
+                                min="20"
+                                max="180"
+                                value={radius}
+                                onChange={(e) => setRadius(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{radius}px</span>
+                        </div>
+
+                        <div className="mb-6">
+                            <label htmlFor="angularVelocity" className="block text-gray-700 text-sm font-semibold mb-2">
+                                각속도 (rad/s):
+                            </label>
+                            <input
+                                type="range"
+                                id="angularVelocity"
+                                min="0.1"
+                                max="5"
+                                step="0.1"
+                                value={angularVelocity}
+                                onChange={(e) => setAngularVelocity(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{angularVelocity} rad/s</span>
+                        </div>
+
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={startSimulation}
+                                disabled={isSimulating}
+                                className={`px-6 py-3 rounded-lg font-semibold shadow-md transition-all duration-300
+                                    ${isSimulating ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white transform hover:scale-105'}`}
+                            >
+                                시뮬레이션 시작
+                            </button>
+                            <button
+                                onClick={resetSimulation}
+                                className="px-6 py-3 bg-red-500 text-white rounded-lg font-semibold shadow-md hover:bg-red-600 transition-all duration-300 transform hover:scale-105"
+                            >
+                                초기화
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="relative w-full max-w-2xl bg-white rounded-xl shadow-lg overflow-hidden">
+                        <canvas
+                            ref={canvasRef}
+                            width={CANVAS_WIDTH}
+                            height={CANVAS_HEIGHT}
+                            className="block"
+                        ></canvas>
+                        {message && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                                {message}
+                            </div>
+                        )}
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                            접선 속도 (v): {tangentialVelocity.toFixed(2)} px/s
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl shadow-lg mt-8 w-full max-w-md text-gray-700">
+                        <h2 className="text-2xl font-bold mb-4">학습 가이드</h2>
+                        <p className="mb-2">이 시뮬레이션은 원운동의 기본 원리를 보여줍니다.</p>
+                        <ul className="list-disc list-inside space-y-1">
+                            <li>반지름과 각속도를 조절하여 물체의 원운동이 어떻게 변하는지 관찰해보세요.</li>
+                            <li>각속도는 물체가 원을 따라 회전하는 빠르기를 나타냅니다.</li>
+                            <li>원운동하는 물체는 항상 원의 중심을 향하는 구심 가속도를 가집니다.</li>
+                            <li>원운동은 주기적인 운동이며, 단진동 운동과 밀접한 관련이 있습니다.</li>
+                        </ul>
+                        <p className="mt-4 text-sm text-gray-500">
+                            미적분학적 관점: 원운동의 위치 벡터를 미분하면 속도 벡터를, 속도 벡터를 미분하면 가속도 벡터를 얻을 수 있습니다. 속도 벡터는 궤적에 접선 방향이고, 가속도 벡터는 원의 중심 방향입니다.
+                        </p>
+                        <button
+                            onClick={onBackToMenu}
+                            className="mt-6 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold shadow-md hover:bg-gray-300 transition-all duration-300 transform hover:scale-105 w-full"
+                        >
+                            메인 메뉴로 돌아가기
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+        // WaveSimulation 컴포넌트
+        const WaveSimulation = ({ onBackToMenu }) => {
+            const canvasRef = React.useRef(null);
+            const animationFrameId = React.useRef(null);
+
+            const [amplitude, setAmplitude] = React.useState(50); // 진폭 (px)
+            const [wavelength, setWavelength] = React.useState(200); // 파장 (px)
+            const [frequency, setFrequency] = React.useState(0.5); // 주파수 (Hz)
+            const [isSimulating, setIsSimulating] = React.useState(false);
+            const [time, setTime] = React.useState(0);
+            const [message, setMessage] = React.useState('');
+
+            // 실시간 표시를 위한 상태 추가
+            const [waveSpeed, setWaveSpeed] = React.useState(0); // 파동 속도
+
+            const CANVAS_WIDTH = 800;
+            const CANVAS_HEIGHT = 400;
+            const CENTER_Y = CANVAS_HEIGHT / 2;
+
+            // 파동 속도 계산 함수
+            const calculateDerivedQuantities = React.useCallback((wl, freq) => {
+                setWaveSpeed(wl * freq);
+            }, []);
+
+            const resetSimulation = React.useCallback(() => {
+                if (animationFrameId.current) {
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+                setIsSimulating(false);
+                setTime(0);
+                setMessage('');
+                calculateDerivedQuantities(wavelength, frequency); // 초기화 시에도 계산
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, [wavelength, frequency, calculateDerivedQuantities]);
+
+            const startSimulation = React.useCallback(() => {
+                if (amplitude <= 0) {
+                    setMessage('진폭은 0보다 커야 합니다.');
+                    return;
+                }
+                if (wavelength <= 0) {
+                    setMessage('파장은 0보다 커야 합니다.');
+                    return;
+                }
+                if (frequency <= 0) {
+                    setMessage('주파수는 0보다 커야 합니다.');
+                    return;
+                }
+                resetSimulation();
+                setIsSimulating(true);
+                setMessage('시뮬레이션 시작!');
+            }, [amplitude, wavelength, frequency, resetSimulation]);
+
+            const drawInitialState = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 평형선 그리기
+                ctx.strokeStyle = '#607D8B'; // 회색
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, CENTER_Y);
+                ctx.lineTo(CANVAS_WIDTH, CENTER_Y);
+                ctx.stroke();
+            }, []);
+
+            const draw = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // 하늘색 배경
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // 평형선 그리기
+                ctx.strokeStyle = '#607D8B';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, CENTER_Y);
+                ctx.lineTo(CANVAS_WIDTH, CENTER_Y);
+                ctx.stroke();
+
+                // 파동 그리기
+                ctx.strokeStyle = '#00BCD4'; // 청록색
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                
+                // 파수 (k) = 2 * PI / wavelength
+                const k = (2 * Math.PI) / wavelength;
+                // 각진동수 (omega) = 2 * PI * frequency
+                const omega = 2 * Math.PI * frequency;
+
+                for (let x = 0; x <= CANVAS_WIDTH; x += 5) { // 5px 간격으로 파동 그리기
+                    // y(x, t) = A * sin(k*x - omega*t)
+                    const y = amplitude * Math.sin(k * x - omega * time);
+                    const canvasY = CENTER_Y - y; // 캔버스 Y축은 위로 갈수록 작아지므로 빼줌
+
+                    if (x === 0) {
+                        ctx.moveTo(x, canvasY);
+                    } else {
+                        ctx.lineTo(x, canvasY);
+                    }
+                }
+                ctx.stroke();
+
+                // 시뮬레이션 종료 조건 (예: 일정 시간 후)
+                if (time > 200) { // 200초 후 자동 종료
+                    setIsSimulating(false);
+                    setMessage('시뮬레이션 완료!');
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+            }, [amplitude, wavelength, frequency, time]);
+
+            const animate = React.useCallback(() => {
+                if (!isSimulating) return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                draw(ctx);
+                setTime(prevTime => prevTime + 0.05); // 시간 0.05초 증가
+
+                animationFrameId.current = requestAnimationFrame(animate);
+            }, [isSimulating, draw]);
+
+            React.useEffect(() => {
+                if (isSimulating) {
+                    animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                }
+                return () => {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                };
+            }, [isSimulating, animate]);
+
+            // 진폭, 파장, 주파수가 변경될 때마다 파생 물리량 업데이트
+            React.useEffect(() => {
+                calculateDerivedQuantities(wavelength, frequency);
+            }, [wavelength, frequency, calculateDerivedQuantities]);
+
+            React.useEffect(() => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, [drawInitialState]);
+
+            return (
+                <>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-6 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 단일 파동 시뮬레이션
+                    </h1>
+
+                    <div className="bg-white p-8 rounded-xl shadow-lg mb-8 w-full max-w-md">
+                        <div className="mb-6">
+                            <label htmlFor="amplitude" className="block text-gray-700 text-sm font-semibold mb-2">
+                                진폭 (px):
+                            </label>
+                            <input
+                                type="range"
+                                id="amplitude"
+                                min="10"
+                                max="100"
+                                value={amplitude}
+                                onChange={(e) => setAmplitude(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{amplitude}px</span>
+                        </div>
+
+                        <div className="mb-6">
+                            <label htmlFor="wavelength" className="block text-gray-700 text-sm font-semibold mb-2">
+                                파장 (px):
+                            </label>
+                            <input
+                                type="range"
+                                id="wavelength"
+                                min="50"
+                                max="400"
+                                value={wavelength}
+                                onChange={(e) => setWavelength(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{wavelength}px</span>
+                        </div>
+
+                        <div className="mb-6">
+                            <label htmlFor="frequency" className="block text-gray-700 text-sm font-semibold mb-2">
+                                주파수 (Hz):
+                            </label>
+                            <input
+                                type="range"
+                                id="frequency"
+                                min="0.1"
+                                max="2"
+                                step="0.1"
+                                value={frequency}
+                                onChange={(e) => setFrequency(Number(e.target.value))}
+                                className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                            />
+                            <span className="text-gray-600 text-sm">{frequency}Hz</span>
+                        </div>
+
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={startSimulation}
+                                disabled={isSimulating}
+                                className={`px-6 py-3 rounded-lg font-semibold shadow-md transition-all duration-300
+                                    ${isSimulating ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white transform hover:scale-105'}`}
+                            >
+                                시뮬레이션 시작
+                            </button>
+                            <button
+                                onClick={resetSimulation}
+                                className="px-6 py-3 bg-red-500 text-white rounded-lg font-semibold shadow-md hover:bg-red-600 transition-all duration-300 transform hover:scale-105"
+                            >
+                                초기화
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="relative w-full max-w-2xl bg-white rounded-xl shadow-lg overflow-hidden">
+                        <canvas
+                            ref={canvasRef}
+                            width={CANVAS_WIDTH}
+                            height={CANVAS_HEIGHT}
+                            className="block"
+                        ></canvas>
+                        {message && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                                {message}
+                            </div>
+                        )}
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                            파동 속도 (v): {waveSpeed.toFixed(2)} px/s
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl shadow-lg mt-8 w-full max-w-md text-gray-700">
+                        <h2 className="text-2xl font-bold mb-4">학습 가이드</h2>
+                        <p className="mb-2">이 시뮬레이션은 단일 파동의 기본 원리를 보여줍니다.</p>
+                        <ul className="list-disc list-inside space-y-1">
+                            <li>진폭은 파동의 최대 변위, 파장은 한 파동의 길이, 주파수는 1초 동안 진동하는 횟수입니다.</li>
+                            <li>파동의 속도는 파장과 주파수의 곱(v = 파장 * 주파수)으로 결정됩니다.</li>
+                            <li>변수를 조절하여 파동의 형태와 움직임이 어떻게 변하는지 관찰해보세요.</li>
+                        </ul>
+                        <p className="mt-4 text-sm text-gray-500">
+                            미적분학적 관점: 파동의 움직임은 편미분 방정식을 통해 기술될 수 있으며, 파동의 속도는 파동 방정식의 해를 통해 얻을 수 있습니다.
+                        </p>
+                        <button
+                            onClick={onBackToMenu}
+                            className="mt-6 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold shadow-md hover:bg-gray-300 transition-all duration-300 transform hover:scale-105 w-full"
+                        >
+                            메인 메뉴로 돌아가기
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+        // WaveSuperpositionSimulation 컴포넌트
+        const WaveSuperpositionSimulation = ({ onBackToMenu }) => {
+            const canvasRef = React.useRef(null);
+            const animationFrameId = React.useRef(null);
+
+            // Wave 1 파라미터
+            const [amplitude1, setAmplitude1] = React.useState(40);
+            const [wavelength1, setWavelength1] = React.useState(150);
+            const [frequency1, setFrequency1] = React.useState(0.5);
+
+            // Wave 2 파라미터
+            const [amplitude2, setAmplitude2] = React.useState(40);
+            const [wavelength2, setWavelength2] = React.useState(150);
+            const [frequency2, setFrequency2] = React.useState(0.5);
+
+            const [isSimulating, setIsSimulating] = React.useState(false);
+            const [time, setTime] = React.useState(0);
+            const [message, setMessage] = React.useState('');
+
+            const CANVAS_WIDTH = 800;
+            const CANVAS_HEIGHT = 400;
+            const CENTER_Y = CANVAS_HEIGHT / 2;
+
+            const resetSimulation = React.useCallback(() => {
+                if (animationFrameId.current) {
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+                setIsSimulating(false);
+                setTime(0);
+                setMessage('');
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, []);
+
+            const startSimulation = React.useCallback(() => {
+                // Validation for both waves
+                if (amplitude1 <= 0 || wavelength1 <= 0 || frequency1 <= 0 ||
+                    amplitude2 <= 0 || wavelength2 <= 0 || frequency2 <= 0) {
+                    setMessage('모든 파동의 진폭, 파장, 주파수는 0보다 커야 합니다.');
+                    return;
+                }
+                resetSimulation();
+                setIsSimulating(true);
+                setMessage('시뮬레이션 시작!');
+            }, [amplitude1, wavelength1, frequency1, amplitude2, wavelength2, frequency2, resetSimulation]);
+
+            const drawInitialState = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // Light blue background
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // Draw equilibrium line
+                ctx.strokeStyle = '#607D8B'; // Gray
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, CENTER_Y);
+                ctx.lineTo(CANVAS_WIDTH, CENTER_Y);
+                ctx.stroke();
+            }, []);
+
+            const draw = React.useCallback((ctx) => {
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.fillStyle = '#e0f2f7'; // Light blue background
+                ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+                // Draw equilibrium line
+                ctx.strokeStyle = '#607D8B';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, CENTER_Y);
+                ctx.lineTo(CANVAS_WIDTH, CENTER_Y);
+                ctx.stroke();
+
+                // Calculate wave parameters
+                const k1 = (2 * Math.PI) / wavelength1;
+                const omega1 = 2 * Math.PI * frequency1;
+                const k2 = (2 * Math.PI) / wavelength2;
+                const omega2 = 2 * Math.PI * frequency2;
+
+                let y_total_points = [];
+
+                for (let x = 0; x <= CANVAS_WIDTH; x += 5) {
+                    // Wave 1
+                    const y1 = amplitude1 * Math.sin(k1 * x - omega1 * time);
+                    // Wave 2
+                    const y2 = amplitude2 * Math.sin(k2 * x - omega2 * time);
+                    // Superposition
+                    const y_total = y1 + y2;
+
+                    y_total_points.push({ x: x, y1: CENTER_Y - y1, y2: CENTER_Y - y2, y_total: CENTER_Y - y_total });
+                }
+
+                // Draw Wave 1 (Red)
+                ctx.strokeStyle = '#FF5722';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                y_total_points.forEach((point, index) => {
+                    if (index === 0) {
+                        ctx.moveTo(point.x, point.y1);
+                    } else {
+                        ctx.lineTo(point.x, point.y1);
+                    }
+                });
+                ctx.stroke();
+
+                // Draw Wave 2 (Blue)
+                ctx.strokeStyle = '#2196F3';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                y_total_points.forEach((point, index) => {
+                    if (index === 0) {
+                        ctx.moveTo(point.x, point.y2);
+                    } else {
+                        ctx.lineTo(point.x, point.y2);
+                    }
+                });
+                ctx.stroke();
+
+                // Draw Superimposed Wave (Green - thicker)
+                ctx.strokeStyle = '#4CAF50';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                y_total_points.forEach((point, index) => {
+                    if (index === 0) {
+                        ctx.moveTo(point.x, point.y_total);
+                    } else {
+                        ctx.lineTo(point.x, point.y_total);
+                    }
+                });
+                ctx.stroke();
+
+                // 시뮬레이션 종료 조건 (예: 일정 시간 후)
+                if (time > 200) { // 200초 후 자동 종료
+                    setIsSimulating(false);
+                    setMessage('시뮬레이션 완료!');
+                    cancelAnimationFrame(animationFrameId.current);
+                }
+
+            }, [amplitude1, wavelength1, frequency1, amplitude2, wavelength2, frequency2, time]);
+
+            const animate = React.useCallback(() => {
+                if (!isSimulating) return;
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const ctx = canvas.getContext('2d');
+                draw(ctx);
+                setTime(prevTime => prevTime + 0.05); // Time increment
+
+                animationFrameId.current = requestAnimationFrame(animate);
+            }, [isSimulating, draw]);
+
+            React.useEffect(() => {
+                if (isSimulating) {
+                    animationFrameId.current = requestAnimationFrame(animate);
+                } else {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                }
+                return () => {
+                    if (animationFrameId.current) {
+                        cancelAnimationFrame(animationFrameId.current);
+                    }
+                };
+            }, [isSimulating, animate]);
+
+            React.useEffect(() => {
+                const canvas = canvasRef.current;
+                if (canvas) {
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                    drawInitialState(ctx);
+                }
+            }, [drawInitialState]);
+
+            return (
+                <>
+                    <h1 className="text-4xl font-bold text-gray-800 mb-6 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 파동의 중첩 시뮬레이션
+                    </h1>
+
+                    <div className="bg-white p-8 rounded-xl shadow-lg mb-8 w-full max-w-2xl grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Wave 1 Controls */}
+                        <div className="border p-4 rounded-lg shadow-sm bg-gray-50">
+                            <h2 className="text-xl font-semibold text-gray-800 mb-4">파동 1 설정 (빨간색)</h2>
+                            <div className="mb-4">
+                                <label htmlFor="amplitude1" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    진폭 (px):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="amplitude1"
+                                    min="10"
+                                    max="100"
+                                    value={amplitude1}
+                                    onChange={(e) => setAmplitude1(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{amplitude1}px</span>
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="wavelength1" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    파장 (px):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="wavelength1"
+                                    min="50"
+                                    max="400"
+                                    value={wavelength1}
+                                    onChange={(e) => setWavelength1(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{wavelength1}px</span>
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="frequency1" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    주파수 (Hz):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="frequency1"
+                                    min="0.1"
+                                    max="2"
+                                    step="0.1"
+                                    value={frequency1}
+                                    onChange={(e) => setFrequency1(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{frequency1}Hz</span>
+                            </div>
+                        </div>
+
+                        {/* Wave 2 Controls */}
+                        <div className="border p-4 rounded-lg shadow-sm bg-gray-50">
+                            <h2 className="text-xl font-semibold text-gray-800 mb-4">파동 2 설정 (파란색)</h2>
+                            <div className="mb-4">
+                                <label htmlFor="amplitude2" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    진폭 (px):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="amplitude2"
+                                    min="10"
+                                    max="100"
+                                    value={amplitude2}
+                                    onChange={(e) => setAmplitude2(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{amplitude2}px</span>
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="wavelength2" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    파장 (px):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="wavelength2"
+                                    min="50"
+                                    max="400"
+                                    value={wavelength2}
+                                    onChange={(e) => setWavelength2(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{wavelength2}px</span>
+                            </div>
+                            <div className="mb-4">
+                                <label htmlFor="frequency2" className="block text-gray-700 text-sm font-semibold mb-2">
+                                    주파수 (Hz):
+                                </label>
+                                <input
+                                    type="range"
+                                    id="frequency2"
+                                    min="0.1"
+                                    max="2"
+                                    step="0.1"
+                                    value={frequency2}
+                                    onChange={(e) => setFrequency2(Number(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer range-lg"
+                                />
+                                <span className="text-gray-600 text-sm">{frequency2}Hz</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-center space-x-4 mb-8">
+                        <button
+                            onClick={startSimulation}
+                            disabled={isSimulating}
+                            className={`px-6 py-3 rounded-lg font-semibold shadow-md transition-all duration-300
+                                ${isSimulating ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white transform hover:scale-105'}`}
+                        >
+                            시뮬레이션 시작
+                        </button>
+                        <button
+                            onClick={resetSimulation}
+                            className="px-6 py-3 bg-red-500 text-white rounded-lg font-semibold shadow-md hover:bg-red-600 transition-all duration-300 transform hover:scale-105"
+                        >
+                            초기화
+                        </button>
+                    </div>
+
+                    <div className="relative w-full max-w-2xl bg-white rounded-xl shadow-lg overflow-hidden">
+                        <canvas
+                            ref={canvasRef}
+                            width={CANVAS_WIDTH}
+                            height={CANVAS_HEIGHT}
+                            className="block"
+                        ></canvas>
+                        {message && (
+                            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-blue-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                                {message}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="bg-white p-6 rounded-xl shadow-lg mt-8 w-full max-w-md text-gray-700">
+                        <h2 className="text-2xl font-bold mb-4">학습 가이드</h2>
+                        <p className="mb-2">이 시뮬레이션은 파동의 중첩 원리를 보여줍니다.</p>
+                        <ul className="list-disc list-inside space-y-1">
+                            <li>빨간색 파동과 파란색 파동의 진폭, 파장, 주파수를 조절해보세요.</li>
+                            <li>초록색 파동은 두 파동이 중첩된 결과입니다.</li>
+                            <li>두 파동이 같은 위상으로 만나면 보강 간섭이 일어나 진폭이 커집니다.</li>
+                            <li>두 파동이 반대 위상으로 만나면 상쇄 간섭이 일어나 진폭이 작아지거나 0이 됩니다.</li>
+                            <li>파동의 속도, 파장, 주파수 사이의 관계(v = 파장 * 주파수)를 다시 한번 상기해보세요.</li>
+                        </ul>
+                        <p className="mt-4 text-sm text-gray-500">
+                            미적분학적 관점: 두 파동 함수를 단순히 더하여 중첩된 파동 함수를 얻을 수 있습니다. 이는 선형 미분 방정식의 해의 선형 결합 원리와 관련이 있습니다.
+                        </p>
+                        <button
+                            onClick={onBackToMenu}
+                            className="mt-6 px-6 py-3 bg-gray-200 text-gray-700 rounded-lg font-semibold shadow-md hover:bg-gray-300 transition-all duration-300 transform hover:scale-105 w-full"
+                        >
+                            메인 메뉴로 돌아가기
+                        </button>
+                    </div>
+                </>
+            );
+        };
+
+
+        // MainMenu 컴포넌트: 시뮬레이션 선택 화면
+        const MainMenu = ({ onSelectSimulation }) => {
+            // alert 대신 사용자 정의 메시지 박스 사용
+            const [alertMessage, setAlertMessage] = React.useState('');
+
+            const showAlert = (message) => {
+                setAlertMessage(message);
+                setTimeout(() => setAlertMessage(''), 3000); // 3초 후 메시지 사라짐
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center p-4 relative">
+                    <h1 className="text-4xl font-bold text-gray-800 mb-8 rounded-lg bg-white p-3 shadow-md">
+                        퀀텀 튜터: 시뮬레이션 선택
+                    </h1>
+                    <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md flex flex-col items-center space-y-6">
+                        <button
+                            onClick={() => onSelectSimulation('projectile')}
+                            className="px-8 py-4 bg-blue-600 text-white rounded-lg font-semibold shadow-md hover:bg-blue-700 transition-all duration-300 transform hover:scale-105 w-full text-center"
+                        >
+                            포물선 운동 시뮬레이션
+                        </button>
+                        <button
+                            onClick={() => onSelectSimulation('shm')}
+                            className="px-8 py-4 bg-purple-600 text-white rounded-lg font-semibold shadow-md hover:bg-purple-700 transition-all duration-300 transform hover:scale-105 w-full text-center"
+                        >
+                            단진동 운동 시뮬레이션
+                        </button>
+                        <button
+                            onClick={() => onSelectSimulation('circular')}
+                            className="px-8 py-4 bg-yellow-600 text-white rounded-lg font-semibold shadow-md hover:bg-yellow-700 transition-all duration-300 transform hover:scale-105 w-full text-center"
+                        >
+                            원운동 시뮬레이션
+                        </button>
+                        <button
+                            onClick={() => onSelectSimulation('wave')}
+                            className="px-8 py-4 bg-green-600 text-white rounded-lg font-semibold shadow-md hover:bg-green-700 transition-all duration-300 transform hover:scale-105 w-full text-center"
+                        >
+                            단일 파동 시뮬레이션
+                        </button>
+                        <button
+                            onClick={() => onSelectSimulation('superposition')}
+                            className="px-8 py-4 bg-teal-600 text-white rounded-lg font-semibold shadow-md hover:bg-teal-700 transition-all duration-300 transform hover:scale-105 w-full text-center"
+                        >
+                            파동의 중첩 시뮬레이션
+                        </button>
+                    </div>
+                    {alertMessage && (
+                        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-red-500 text-white text-sm px-4 py-2 rounded-full shadow-lg">
+                            {alertMessage}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // 메인 App 컴포넌트: 시뮬레이션 라우팅 관리
+        const App = () => {
+            // 현재 활성화된 시뮬레이션을 관리하는 상태. null이면 메인 메뉴 표시.
+            const [currentSimulation, setCurrentSimulation] = React.useState(null); 
+
+            // 현재 시뮬레이션 상태에 따라 적절한 컴포넌트를 렌더링
+            const renderSimulation = () => {
+                switch (currentSimulation) {
+                    case 'projectile':
+                        return <ProjectileMotionSimulation onBackToMenu={() => setCurrentSimulation(null)} />;
+                    case 'shm':
+                        return <SimpleHarmonicMotionSimulation onBackToMenu={() => setCurrentSimulation(null)} />;
+                    case 'circular':
+                        return <CircularMotionSimulation onBackToMenu={() => setCurrentSimulation(null)} />;
+                    case 'wave':
+                        return <WaveSimulation onBackToMenu={() => setCurrentSimulation(null)} />;
+                    case 'superposition': // 새로운 케이스 추가
+                        return <WaveSuperpositionSimulation onBackToMenu={() => setCurrentSimulation(null)} />;
+                    default:
+                        return <MainMenu onSelectSimulation={setCurrentSimulation} />;
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-100 flex flex-col items-center justify-center p-4 font-inter">
+                    {/* 스타일은 head 태그로 이동했으므로 여기서는 제거 */}
+                    {renderSimulation()}
+                </div>
+            );
+        };
+
+        // React 앱을 DOM에 마운트
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+    </script>
+</body>
+</html>
